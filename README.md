@@ -1,4 +1,4 @@
-miniircd -- A (very) simple Internet Relay Chat (IRC) server
+miniircd -- A (very) simple Internet Relay Chat (IRC) server (mod using EPOLL)
 ============================================================
 
 Description
@@ -14,6 +14,7 @@ Features
 
 * Knows about the basic IRC protocol and commands.
 * Easy installation.
+* handles lots of connections since this modification uses EPOLL
 * Basic SSL support.
 * No configuration.
 * No ident lookup (so that people behind firewalls that filter the ident port
