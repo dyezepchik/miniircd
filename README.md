@@ -4,10 +4,7 @@ miniircd -- A (very) simple Internet Relay Chat (IRC) server (mod using EPOLL)
 Description
 -----------
 
-miniircd is a small and limited IRC server written in Python. Despite its size,
-it is a functional alternative to a full-blown ircd for private or internal
-use. Installation is simple; no configuration is required.
-
+Limitation of the original miniircd by @jrosdahl was the number of simultaneous users connected due to used SELECT system call. This mod uses EPOLL (but can be used only on linux-like systems). The number of simultaneous users is probably limited by the maximum number of open file descriptors in your system. Also EPOLL works more effectively with them compared to SELECT.
 
 Features
 --------
