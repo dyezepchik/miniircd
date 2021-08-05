@@ -946,7 +946,8 @@ class Server:
         del self.channels[irc_lower(channel.name)]
 
     def start(self) -> None:
-        serversockets = []
+        serversockets = dict()
+        self.epoll = select.epoll()
         for port in self.ports:
             s = socket.socket(
                 socket.AF_INET6 if self.ipv6 else socket.AF_INET,
@@ -959,7 +960,9 @@ class Server:
                 self.print_error(f"Could not bind port {port}: {e}.")
                 sys.exit(1)
             s.listen(5)
-            serversockets.append(s)
+            s.setblocking(0)
+            self.epoll.register(s.fileno(), select.EPOLLIN | select.EPOLLET)
+            serversockets[s.fileno()] = s
             del s
             self.print_info(f"Listening on port {port}.")
         if self.chroot:
@@ -1002,56 +1005,80 @@ class Server:
         self.logger.setLevel(log_level)
         self.logger.addHandler(fh)
 
-    def run(self, serversockets: List[Socket]) -> None:
-        last_aliveness_check = time.time()
-        while True:
-            iwtd, owtd, ewtd = select.select(
-                serversockets + [x.socket for x in self.clients.values()],
-                [
-                    x.socket
-                    for x in self.clients.values()
-                    if x.write_queue_size() > 0
-                ],
-                [],
-                10,
-            )
-            for x in iwtd:
-                if x in self.clients:
-                    self.clients[x].socket_readable_notification()
-                else:
-                    conn, addr = x.accept()
-                    if self.ssl_key_file:
-                        try:
-                            conn = self.ssl.wrap_socket(
-                                conn,
-                                server_side=True,
-                                certfile=self.ssl_cert_file,
-                                keyfile=self.ssl_key_file,
-                            )
-                        except Exception as e:
-                            self.print_error(
-                                "SSL error for connection from"
-                                f" {addr[0]}:{addr[1]}: {e}"
-                            )
-                            continue
+    def poller(self, serversockets: Dict[int, Socket]):
+        events = self.epoll.poll(timeout=0.1, maxevents=1024)
+
+        for fileno, event in events:
+            if fileno in serversockets:
+                (conn, addr) = serversockets[fileno].accept()
+                conn.setblocking(0)
+
+                if self.ssl_key_file:
                     try:
-                        self.clients[conn] = Client(self, conn)
-                        self.print_info(
-                            f"Accepted connection from {addr[0]}:{addr[1]}."
+                        conn = self.ssl.wrap_socket(
+                            conn,
+                            server_side=True,
+                            certfile=self.ssl_cert_file,
+                            keyfile=self.ssl_key_file,
                         )
-                    except socket.error:
-                        try:
-                            conn.close()
-                        except Exception:
-                            pass
-            for x in owtd:
-                if x in self.clients:  # client may have been disconnected
-                    self.clients[x].socket_writable_notification()
-            now = time.time()
-            if last_aliveness_check + 10 < now:
-                for client in list(self.clients.values()):
-                    client.check_aliveness()
-                last_aliveness_check = now
+                    except Exception as e:
+                        self.print_error(
+                            "SSL error for connection from"
+                            f" {addr[0]}:{addr[1]}: {e}"
+                        )
+                        continue
+
+                try:
+                    self.clients[conn.fileno()] = Client(self, conn)
+                    self.epoll.register(conn.fileno(), select.EPOLLIN | select.EPOLLOUT | select.EPOLLHUP)
+                    self.print_info(f"Accepted connection from {addr[0]}:{addr[1]}.")
+                except socket.error:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+            elif fileno in self.clients:
+                if event & select.EPOLLIN:
+                    self.clients[fileno].socket_readable_notification()
+
+                    if fileno not in self.clients:
+                        continue
+
+                if event & select.EPOLLOUT:
+                    self.clients[fileno].socket_writable_notification()
+
+
+                if event & select.EPOLLHUP:
+                    self.clients[fileno].disconnect('ping timeout')
+                    continue
+
+            else:
+                raise RuntimeError('file descriptor %s not found in epoll list' % fileno)
+
+
+    def run(self, serversockets: Dict[int, Socket]) -> None:
+        last_aliveness_check = time.time()
+        try:
+            while True:
+                try:
+                    self.poller(serversockets)
+                except IOError:
+                    pass
+
+                now = time.time()
+                if last_aliveness_check + 10 < now:
+                    for client in list(self.clients.values()):
+                        client.check_aliveness()
+                    last_aliveness_check = now
+
+        finally:
+            for fileno in serversockets:
+                self.epoll.unregister(fileno)
+            self.epoll.close()
+            for s in serversockets.values():
+                s.close()
+                del s
 
 
 _ircstring_translation = bytes.maketrans(

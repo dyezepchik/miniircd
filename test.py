@@ -28,11 +28,17 @@ class ServerFixture:
             arguments = [
                 "miniircd",
                 # "--debug",
+                # "--verbose",
+                "--setuid=root",
                 "--ports=%d" % SERVER_PORT,
             ]
             if persistent:
                 arguments.append(f"--state-dir={self.state_dir}")
-            os.execv("./miniircd", arguments)
+            try:
+                os.execv("./miniircd", arguments)
+            except OSError as e:
+                print(f"os error occurred {e}")
+
         # Parent.
         self.child_pid = pid
         self.connections: Dict[str, IO] = {}  # nick -> fp
@@ -244,6 +250,18 @@ class TestBasicStuff(ServerFixture):
         self.send("lemur", "PART #fisk :boa")
         self.expect("lemur", r":lemur!lemur@127.0.0.1 PART #fisk :boa")
         self.expect("apa", r":lemur!lemur@127.0.0.1 PART #fisk :boa")
+
+    def test_join_many_users(self) -> None:
+        base_nick = "A" * 10
+        nick_list = []
+        for i in range(1025):
+            full_nick = f"{base_nick}{i}"
+            nick_list.append(full_nick)
+            try:
+                self.connect(full_nick)
+                self.send(full_nick, "JOIN #fisk")
+            except BrokenPipeError:
+                print(f"broke on {i}-th connection")
 
     def test_join_and_name_many_users(self) -> None:
         base_nick = "A" * 49
